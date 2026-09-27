@@ -1,25 +1,58 @@
 {
   "expo": {
-    "name": "nfc-toolkit",
+    "name": "NFC Toolkit",
     "slug": "nfc-toolkit",
+    "scheme": "nfctoolkit",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.nowodev.nfctoolkit",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.nowodev.nfctoolkit",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0F172A",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "permissions": [
+        "android.permission.NFC"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-sharing",
+      "expo-dev-client",
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "NFC Toolkit reads and writes NFC tags you hold near your phone.",
+          "selectIdentifiers": [
+            "D2760000850101",
+            "D2760000850100"
+          ],
+          "systemCodes": [
+            "12FC"
+          ],
+          "includeNdefEntitlement": false
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }
