@@ -2,7 +2,7 @@ import { Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import { Linking, View } from 'react-native';
 import { TagView } from '@/components/TagView';
-import { Button, Card, IconBadge, IconButton, Notice, Screen, ToggleRow, Txt } from '@/components/ui';
+import { Button, Card, IconBadge, IconButton, Notice, Screen, SectionTitle, ToggleRow, Txt } from '@/components/ui';
 import { space } from '@/components/theme';
 import { useNfcAction } from '@/components/useNfcAction';
 import { describe } from '@/lib/describe';
@@ -25,7 +25,14 @@ export default function ReadScreen() {
     }, []),
   );
 
+  const clear = () => {
+    setInfo(null);
+    setEntryId(null);
+  };
+
   const scanOnce = async () => {
+    // Drop the previous tag first so a failed or cancelled scan never leaves stale details on screen.
+    clear();
     const result = await run(readTag);
     if (!result) return false;
     setInfo(result);
@@ -94,7 +101,12 @@ export default function ReadScreen() {
         </View>
       </Card>
 
-      {info && <TagView info={info} onSave={entryId ? () => router.push({ pathname: '/history/[id]', params: { id: entryId } }) : undefined} />}
+      {info && (
+        <>
+          <SectionTitle right={<Button compact variant="ghost" icon="close" title="Clear" onPress={clear} />}>Last scan</SectionTitle>
+          <TagView info={info} onSave={entryId ? () => router.push({ pathname: '/history/[id]', params: { id: entryId } }) : undefined} />
+        </>
+      )}
     </Screen>
   );
 }

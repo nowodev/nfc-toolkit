@@ -2,14 +2,19 @@ import Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import { Alert } from 'react-native';
-import { Card, ListItem, SectionTitle, Screen, ToggleRow, Txt, confirm } from '@/components/ui';
+import { useSyncExternalStore } from 'react';
+import { Alert, Share, View } from 'react-native';
+import { Button, Card, ListItem, SectionTitle, Screen, ToggleRow, Txt, confirm } from '@/components/ui';
+import { space } from '@/components/theme';
+import { clearDiag, getDiag, subscribeDiag } from '@/lib/nfc';
 import { clearHistory, makeBackup, restoreBackup, settingsStore, useHistory, useSettings, useTemplates, Settings } from '@/lib/storage';
 
 export default function SettingsScreen() {
   const s = useSettings();
   const history = useHistory();
   const templates = useTemplates();
+  const diag = useSyncExternalStore(subscribeDiag, getDiag, getDiag);
+  const diagText = () => diag.map((d) => `${stamp(d.t)}  ${d.msg}`).join('\n');
   const set = (patch: Partial<Settings>) => settingsStore.set((prev) => ({ ...prev, ...patch }));
 
   const exportBackup = async () => {
@@ -60,6 +65,33 @@ export default function SettingsScreen() {
         />
       </Card>
 
+      <SectionTitle>NFC diagnostics</SectionTitle>
+      <Card>
+        <View style={{ gap: space.md }}>
+          <Txt dim size={13}>
+            A timeline of NFC sessions since the app opened. If scanning misbehaves, share this with whoever is helping you.
+          </Txt>
+          {diag.length === 0 ? (
+            <Txt faint size={13}>
+              No NFC activity yet.
+            </Txt>
+          ) : (
+            diag
+              .slice(-40)
+              .reverse()
+              .map((d, i) => (
+                <Txt key={i} monospace size={11} selectable>
+                  {stamp(d.t)} {d.msg}
+                </Txt>
+              ))
+          )}
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <Button style={{ flex: 1 }} compact variant="secondary" icon="share-outline" title="Share log" disabled={!diag.length} onPress={() => Share.share({ message: diagText() })} />
+            <Button style={{ flex: 1 }} compact variant="ghost" icon="trash-outline" title="Clear" disabled={!diag.length} onPress={clearDiag} />
+          </View>
+        </View>
+      </Card>
+
       <SectionTitle>About</SectionTitle>
       <Card>
         <Txt weight="600">NFC Toolkit {Constants.expoConfig?.version}</Txt>
@@ -69,4 +101,10 @@ export default function SettingsScreen() {
       </Card>
     </Screen>
   );
+}
+
+function stamp(t: number) {
+  const d = new Date(t);
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }

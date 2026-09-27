@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import NfcManager, { NfcTech } from 'react-native-nfc-manager';
+import NfcManager, { NfcError, NfcEvents, NfcTech } from 'react-native-nfc-manager';
 import { Bytes, toBytes } from './bytes';
 
 export const isIOS = Platform.OS === 'ios';
@@ -40,6 +40,71 @@ export async function cancelScan() {
   await NfcManager.cancelTechnologyRequest().catch(() => {});
 }
 
+// ─── Diagnostics ────────────────────────────────────────────────────────────
+// A small timeline of session events, viewable in Settings, for debugging on device.
+export interface DiagEntry {
+  t: number;
+  msg: string;
+}
+let diag: DiagEntry[] = [];
+const diagListeners = new Set<() => void>();
+
+export function logDiag(msg: string) {
+  diag = [...diag.slice(-299), { t: Date.now(), msg }];
+  diagListeners.forEach((l) => l());
+}
+export const getDiag = () => diag;
+export function clearDiag() {
+  diag = [];
+  diagListeners.forEach((l) => l());
+}
+export function subscribeDiag(l: () => void) {
+  diagListeners.add(l);
+  return () => {
+    diagListeners.delete(l);
+  };
+}
+
+// ─── iOS session gate ───────────────────────────────────────────────────────
+// Cancelling an iOS session returns immediately, but UIKit only reports it closed
+// (didInvalidateWithError) after the sheet animates away. The library's handler for that
+// late event resets its state and fails whatever request is pending, and iOS 27 also
+// terminates (error 202) a session begun while the previous sheet is still going away.
+// So each new iOS session waits for the previous one to report closed, then settles.
+const SETTLE_MS = 700;
+let sessionClosed: Promise<void> = Promise.resolve();
+let resolveSessionClosed: (() => void) | null = null;
+let lastClosedAt = 0;
+
+function markSessionOpening() {
+  sessionClosed = new Promise((resolve) => {
+    resolveSessionClosed = resolve;
+  });
+}
+
+function onSessionClosed() {
+  lastClosedAt = Date.now();
+  resolveSessionClosed?.();
+  resolveSessionClosed = null;
+}
+
+/** Releases the gate if UIKit never reports the close. Bound to the current session. */
+function armCloseFallback() {
+  const thisSession = resolveSessionClosed;
+  setTimeout(() => {
+    if (thisSession && resolveSessionClosed === thisSession) {
+      logDiag('no close event after 4s; releasing gate');
+      onSessionClosed();
+    }
+  }, 4000);
+}
+
+async function waitForPreviousSession() {
+  await sessionClosed;
+  const wait = lastClosedAt + SETTLE_MS - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 let started: Promise<boolean> | null = null;
 
@@ -49,6 +114,11 @@ export async function initNfc(): Promise<{ supported: boolean; enabled: boolean 
       try {
         const supported = await NfcManager.isSupported();
         if (supported) await NfcManager.start();
+        if (supported && isIOS)
+          NfcManager.setEventListener(NfcEvents.SessionClosed, (err?: unknown) => {
+            logDiag(`session closed${err ? `: ${errorName(err)}` : ''}`);
+            onSessionClosed();
+          });
         return supported;
       } catch {
         return false;
@@ -88,17 +158,74 @@ export interface SessionOptions {
   success?: string | ((result: unknown) => string);
 }
 
+// iOS errors arrive as NfcError subclasses with no message, so name them by type.
+// (instanceof, not constructor.name: release builds minify class names.)
+const ERRORS: [new (...args: any[]) => Error, string, string][] = [
+  [NfcError.UserCancel, 'UserCancel', 'Cancelled.'],
+  [NfcError.Timeout, 'Timeout', 'Timed out waiting for a tag.'],
+  [NfcError.SystemBusy, 'SystemBusy', 'The NFC system is busy. Wait a moment and try again.'],
+  [NfcError.TagConnectionLost, 'TagConnectionLost', 'The tag moved away before the operation finished. Hold your phone still against the tag and try again.'],
+  [NfcError.SessionInvalidated, 'SessionInvalidated', 'The NFC session ended unexpectedly. Try again.'],
+  [NfcError.TagNotConnected, 'TagNotConnected', 'Lost connection to the tag. Try again.'],
+  [NfcError.RetryExceeded, 'RetryExceeded', 'The tag stopped responding. Try again.'],
+  [NfcError.TagResponseError, 'TagResponseError', 'The tag returned an error for that command.'],
+  [NfcError.TagNotWritable, 'TagNotWritable', 'This tag is read-only.'],
+  [NfcError.TagSizeTooSmall, 'TagSizeTooSmall', 'The data is too large for this tag.'],
+  [NfcError.TagUpdateFailure, 'TagUpdateFailure', 'Writing to the tag failed. Hold still and try again.'],
+  [NfcError.ZeroLengthMessage, 'ZeroLengthMessage', 'There is no data to write.'],
+  [NfcError.FirstNdefInvalid, 'FirstNdefInvalid', 'The tag’s data is invalid or corrupted.'],
+  [NfcError.UnsupportedFeature, 'UnsupportedFeature', 'This tag doesn’t support that operation.'],
+  [NfcError.SecurityViolation, 'SecurityViolation', 'The tag refused the operation.'],
+  [NfcError.RadioDisabled, 'RadioDisabled', 'NFC is turned off.'],
+  [NfcError.Unexpected, 'Unexpected (202)', 'The NFC system hit an unexpected error. Try again.'],
+];
+
+function errorName(e: unknown): string {
+  for (const [type, name] of ERRORS) if (e instanceof type) return name;
+  return (e instanceof Error && e.message) || String(e);
+}
+
 function errorMessage(e: unknown): string {
   if (e instanceof Error && e.message) return e.message;
-  if (typeof e === 'string') return e;
-  return 'Something went wrong talking to the tag';
+  for (const [type, , text] of ERRORS) if (e instanceof type) return text;
+  if (typeof e === 'string' && e) return e;
+  return 'Something went wrong talking to the tag.';
 }
 
 export function isCancel(e: unknown): boolean {
-  if (e instanceof CancelledError) return true;
-  const name = (e as any)?.constructor?.name ?? '';
+  if (e instanceof CancelledError || e instanceof NfcError.UserCancel) return true;
   const msg = String((e as any)?.message ?? e ?? '').toLowerCase();
-  return name === 'UserCancel' || msg.includes('cancel') || msg.includes('user_canceled');
+  return msg.includes('cancel');
+}
+
+const START_RETRIES = 2;
+const QUICK_FAIL_MS = 3000;
+
+/**
+ * iOS: begins a tag-reader session. A session that iOS kills straight away (202 / busy)
+ * never reached a tag, so it's retried rather than reported.
+ */
+async function requestIOS(techs: NfcTech[], message: string): Promise<string | null> {
+  for (let attempt = 1; ; attempt++) {
+    await waitForPreviousSession();
+    markSessionOpening();
+    const t0 = Date.now();
+    logDiag(`session start #${attempt}`);
+    try {
+      const tech = await NfcManager.requestTechnology(techs, { alertMessage: message });
+      logDiag(`tag connected (${tech}) after ${Date.now() - t0}ms`);
+      return tech;
+    } catch (e) {
+      const elapsed = Date.now() - t0;
+      logDiag(`session start failed after ${elapsed}ms: ${errorName(e)}`);
+      const transient = e instanceof NfcError.Unexpected || e instanceof NfcError.SystemBusy;
+      if (!cancelRequested && transient && elapsed < QUICK_FAIL_MS && attempt <= START_RETRIES) {
+        armCloseFallback();
+        continue;
+      }
+      throw e;
+    }
+  }
 }
 
 /**
@@ -115,25 +242,31 @@ export async function withTag<T>(techs: NfcTech[], opts: SessionOptions, fn: (te
   try {
     let tech: string | null;
     try {
-      tech = await NfcManager.requestTechnology(techs, { alertMessage: opts.message });
+      tech = isIOS ? await requestIOS(techs, opts.message) : await NfcManager.requestTechnology(techs, { alertMessage: opts.message });
     } catch (e) {
       if (cancelRequested || isCancel(e)) throw new CancelledError();
       throw e;
     }
     if (cancelRequested) throw new CancelledError();
     const result = await fn(tech ?? '');
+    logDiag('operation succeeded');
     if (isIOS) {
       const msg = typeof opts.success === 'function' ? opts.success(result) : opts.success ?? 'Done ✓';
       await NfcManager.setAlertMessageIOS(msg).catch(() => {});
     }
     return result;
   } catch (e) {
-    if (cancelRequested || e instanceof CancelledError) throw new CancelledError();
+    if (cancelRequested || e instanceof CancelledError) {
+      logDiag('cancelled');
+      throw new CancelledError();
+    }
+    logDiag(`operation failed: ${errorName(e)}`);
     if (isIOS) await NfcManager.invalidateSessionWithErrorIOS(errorMessage(e)).catch(() => {});
-    throw e instanceof Error ? e : new Error(errorMessage(e));
+    throw new Error(errorMessage(e));
   } finally {
     if (isAndroid) setUi({ visible: false, message: '' });
     await NfcManager.cancelTechnologyRequest().catch(() => {});
+    if (isIOS) armCloseFallback();
   }
 }
 

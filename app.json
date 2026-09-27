@@ -12,12 +12,13 @@
       "bundleIdentifier": "com.nowodev.nfctoolkit",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "appleTeamId": "6QRJ5PHQ3C"
     },
     "android": {
       "package": "com.nowodev.nfctoolkit",
       "adaptiveIcon": {
-        "backgroundColor": "#0F172A",
+        "backgroundColor": "#1E3A9E",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -49,7 +50,8 @@
           "includeNdefEntitlement": false
         }
       ],
-      "expo-font"
+      "expo-font",
+      "./plugins/with-scene-lifecycle"
     ],
     "experiments": {
       "typedRoutes": true
